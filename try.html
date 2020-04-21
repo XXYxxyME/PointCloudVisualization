@@ -1,0 +1,1028 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>CloudPoint</title>
+    <meta charset="utf-8">
+    <meta http-equiv="cache-control" content="max-age = 300">
+    <link href="setUp.css" rel="stylesheet" type="text/css">
+    <script src="build/three.js"></script>
+    <script src="libs/controls/OrbitControls.js"></script>
+    <script src="libs/libs/stats.min.js"></script>
+    <script src="libs/libs/dat.gui.min.js"></script>
+    <script src="libs/hrcLoad.js"></script>
+    <script src="libs/dealDB.js"></script>
+    <script src="libs/Shader.js"></script>
+    <script src="libs/jquery/jquery-3.4.1.js"></script>
+    <script src="libs/libs/BinaryHeap.js"></script>
+    <script src="libs/octreeGeometry.js"></script>
+    <script src="libs/readLAZ.js"></script>
+    <script src="js/simplex-noise.js"></script>
+    <script src="js/jquery.min.js"></script>
+    <script src="libs/request.js"></script>
+    <script src="libs/render.js"></script>
+    <script src="libs/xxx.js"></script>
+    <script src="libs/proj4/proj4.js"></script>
+    <script src="libs/test.js"></script>
+    <script src="libs/webSocket.js"></script>
+    <script src="libs/libs/pako.min.js"></script>
+    <script src="libs/Cesium/Cesium.js"></script>
+    <script id="post-vert" type="x-shader/x-vertex">
+        varying vec2 vUv;
+        void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+	</script>
+    <script id="post-frag" type="x-shader/x-fragment">
+        #extension GL_EXT_frag_depth : enable
+        #define NEIGHBOUR_COUNT 8
+
+        precision mediump float;
+        precision mediump int;
+
+        uniform float changeflag;
+        uniform float screenWidth;
+        uniform float screenHeight;
+        uniform vec2 neighbours[NEIGHBOUR_COUNT];
+        uniform float edlStrength;
+        uniform float radius;
+        uniform float opacity;
+        uniform float uNear;
+        uniform float uFar;
+        uniform mat4 uProj;
+        uniform sampler2D uEDLColor;
+
+        varying vec2 vUv;
+
+        float response(float depth){
+
+            vec2 uvRadius = radius / vec2(screenWidth, screenHeight);
+            float sum = 0.0;
+
+            for(int i = 0; i < NEIGHBOUR_COUNT; i++){
+
+                vec2 uvNeighbor = vUv + uvRadius * neighbours[i];
+                float neighbourDepth = texture2D(uEDLColor, uvNeighbor).a;
+                neighbourDepth = (neighbourDepth == 1.0) ? 0.0 : neighbourDepth;
+                if(neighbourDepth != 0.0){
+                    sum += max(0.0, depth - neighbourDepth);
+                }
+                else{
+                    sum += 0.0;
+                }
+            }
+            return sum / float(NEIGHBOUR_COUNT);
+        }
+
+        void main(){
+
+            vec4 cEDL = texture2D(uEDLColor, vUv);
+            float depth = cEDL.a;
+            depth = (depth == 1.0) ? 0.0 : depth;
+            if(changeflag == 0.0 && depth == 0.0){
+
+              discard;
+            }
+            float res = response(depth);
+            float shade = exp(-res * 100.0 * edlStrength);
+
+            gl_FragColor = vec4(cEDL.r * shade, cEDL.g * shade, cEDL.b * shade, opacity);
+
+        }
+	</script>
+
+
+</head>
+
+<body>
+<div id="cesiumContainer"></div>
+<div id="ThreeContainer"></div>
+<div class="Navbar">
+    <div class="nav">
+        <div class="a">
+            <a href="#">
+                <span class="span" id="image">地图匹配</span>
+            </a>
+        </div>
+    </div>
+    <div class="nav">
+        <div class="a">
+            <a href="#">
+                <span class="span" id="bg2">EDL</span>
+            </a>
+        </div>
+    </div>
+    <div class="nav">
+        <div class="a">
+            <a href="#">
+                <span class="span" id="bg3">颜色</span>
+            </a>
+        </div>
+    </div>
+    <div class="nav">
+        <div class="a">
+            <a href="#">
+                <span class="span" id="bg4">待定</span>
+            </a>
+        </div>
+    </div>
+    <div class="nav">
+        <div class="a">
+            <a href="#">
+                <span class="span" id="bg5">待定</span>
+            </a>
+        </div>
+    </div>
+    <div class="nav">
+        <div class="a">
+            <a href="#">
+                <span class="span" id="bg6">待定</span>
+            </a>
+        </div>
+    </div>
+</div>
+<input id="renderTimer" type="text" class="txt" value="计时器" />
+<input id="report" type="text" class="reportTxt" value="请求节点数量" />
+<input id="pointsNum" type="text" class="pointsTxt" value="总点数" />
+<script>
+
+    var three = {
+        renderer: null,
+        camera: null,
+        scene: null,
+        godcamera: null,
+        controls: null,
+        target: null,
+        mustRenderLevel: 2,
+    };
+
+    var flag = {
+        changecamera: 1,
+        xflag: 0,
+        indexTableFlag: 0,//用来判断遍历数据库是否完成
+        changeFlag: 1,//是否加载地图
+        jsFlag: 0,//判断json文件是否已经加载
+        position: null,//用来存储相机上一次的位置
+        webNum: 0,//web端已经传过来的节点数量
+        completedRenderNodeNumber: 0,//渲染节点数量
+        pointsNum:0,//渲染点数
+        dbpointsNum:0,//总点数
+        liyonglv:0,
+    };
+
+    var vector = {
+
+        lelNode:[],
+        combination:[],
+        numb: 0,
+    };
+
+    var webSocketNumber = 10;
+
+    var stats, cameraPerspectiveHelper;
+
+    var gui;
+    const workerPool = new WorkerPool();
+    let Pco = new pointCloudOctreeGeometry();
+
+    let nodeurl = 'http://47.112.97.110:3000/pointCloudData/PointCloud?binName=';
+    let hrcurl = 'ncloud.hrc';
+    let jsonurl = 'ncloud.js';
+
+    let minx, miny, minz;
+
+    let drawQueue = [];//判断时需要渲染的节点
+    let drawNewNodesQueue = [];//判断时需要渲染的新节点
+    let requestQueue = [];
+    let memoryQueue = [];//判断时在内存中的节点
+    let nodesInDB = [];//判断时在数据库中的节点
+    let memoryNode = [];
+    let indexQueue = [];
+    let completedLoadedNodes = [];
+
+    var postMaterial1;
+    var postScene2, postCamera2;
+
+    var request = window.indexedDB.open("customdata26T3", 1);//customdata26GN customdata26T1
+    var db;
+    /*
+    var canvas = document.getElementById("bCanvas"),
+        ctx = canvas.getContext('2d'),
+        canvasW = $(document).width(),
+        canvasH = $(document).height();
+
+    ctx.fillStyle = '#0000ff';
+    //设置长宽，默认为300 x 150
+    canvas.width = canvasW;
+    canvas.height = canvasH;
+
+    var emitter = {
+        h: 50,
+        x: canvasW/2 - 250,
+        y: canvasH/2,
+        vx: 5,
+        vy: 5,
+        v: 0.05,
+        dx: 0,
+        dy: 0
+    };
+
+    var stops = [500],
+        stopIndex = 0,
+        delay = 0,
+        prog = 0;
+
+    var particles = new Array();
+
+    var rate = 2,
+        time = 0;
+
+    var simplex = new SimplexNoise(),
+        simplexStart = 20;
+*/
+    function initScene () {
+
+        three.scene = new THREE.Scene();
+        three.scene.background = new THREE.CubeTextureLoader().setPath("skybox3/").load(['nx.jpg', 'px.jpg', 'pz.jpg', 'nz.jpg', 'py.jpg', 'ny.jpg', ]);
+    }
+
+    function initGui() {
+
+        gui = {
+            fov:45,
+            maxLevel:10,
+            //backColor:[ 0, 0, 0 ],
+            Box:false,
+            LOD:false,
+            HQ:false,
+            EDL:true,
+            far:5000,
+            strength:1.0,
+            currentMaxLevel:2,
+        };
+/*
+        var datGui = new dat.GUI();
+        datGui.add(gui, 'fov', 0, 180);
+        datGui.add(gui, 'maxLevel', 0, 10);
+        //datGui.addColor(gui, 'backColor');
+        datGui.add(gui, 'Box');
+        datGui.add(gui, 'LOD');
+        datGui.add(gui, 'HQ');
+        datGui.add(gui, 'EDL');
+        datGui.add(gui, 'far', 10, 20000);
+        datGui.add(gui, 'strength', 0, 10);
+        datGui.close();
+*/
+
+        document.getElementById('image').onclick=function(){
+            if(flag.changeFlag === 0){
+
+                flag.changeFlag = 1;
+                //document.getElementById("ThreeContainer").style.visibility="visible";
+                document.getElementById("cesiumContainer").style.visibility="hidden";
+
+            }
+            else if(flag.changeFlag === 1){
+
+                flag.changeFlag = 0;
+                //document.getElementById("ThreeContainer").style.visibility="hidden";
+                document.getElementById("cesiumContainer").style.visibility="visible";
+
+            }
+        };
+
+        document.getElementById('bg2').onclick=function(){
+            gui.EDL = gui.EDL === false;
+        };
+
+        document.getElementById('bg3').onclick=function(){
+
+            gui.LOD = gui.LOD === false;
+            decideAndDraw();
+
+        };
+
+        document.getElementById('bg4').onclick=function(){
+
+            boxRender(drawQueue);
+
+        };
+    }
+
+    function initCamera() {
+
+        three.camera = new THREE.PerspectiveCamera(gui.fov, window.innerWidth/window.innerHeight, 1, gui.far);
+        three.camera.up.x = 0;
+        three.camera.up.y = 0;
+        three.camera.up.z = 1;
+        three.camera.position.set(Pco.boundingBox.max.x/2.5, Pco.boundingBox.max.y/5.0, 150.0);
+
+        //cameraPerspectiveHelper = new THREE.CameraHelper(three.camera);
+        //cameraPerspectiveHelper.name = 'nc';
+        //three.scene.add(cameraPerspectiveHelper);
+
+        three.godcamera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 200000);
+        three.godcamera.position.set(Pco.boundingSphere.center.x * 3, Pco.boundingSphere.center.y * 3, Pco.boundingSphere.center.z * 1);
+        three.godcamera.lookAt(new THREE.Vector3(0, 0, 0));
+
+        flag.changecamera = 1;
+
+    }
+
+    function initThree() {
+
+        three.renderer = new THREE.WebGLRenderer({
+
+            antialias: true,
+            logarithmicDepthBuffer: true,
+            alpha: true
+
+        });
+
+        //three.renderer.setSize(window.innerWidth, window.innerHeight);
+        //document.body.appendChild(three.renderer.domElement);
+        three.renderer.domElement.width = window.ThreeContainer.offsetWidth;
+        three.renderer.domElement.height = window.ThreeContainer.offsetHeight;
+        window.ThreeContainer = document.getElementById("ThreeContainer");
+        window.ThreeContainer.appendChild(three.renderer.domElement);
+        window.ThreeContainer.addEventListener('mousedown', mousedown);
+        window.ThreeContainer.addEventListener('mouseup', mouseup);
+
+        //1034 544
+        //three.renderer.setSize(document.getElementById("cesiumContainer").offsetWidth, document.getElementById("cesiumContainer").offsetHeight);
+        three.renderer.setSize(window.ThreeContainer.offsetWidth, window.ThreeContainer.offsetHeight);
+        three.renderer.setClearColor(0xEEEEEE, 0.0);
+
+        //console.log('th',three.renderer.domElement,window.ThreeContainer.offsetWidth, window.ThreeContainer.offsetHeight);
+    }
+
+    function initCesium(){
+
+        var GMap = new Cesium.UrlTemplateImageryProvider({
+
+            url:'http://www.google.cn/maps/vt?lyrs=s@800&x={x}&y={y}&z={z}',
+            tilingScheme:new Cesium.WebMercatorTilingScheme(),
+            minimumLevel:1,
+            maximumLevel:20
+        });
+
+        window.cesiumViewer = new Cesium.Viewer('cesiumContainer', {
+            useDefaultRenderLoop: false,
+            animation: false,
+            baseLayerPicker : false,
+            fullscreenButton: false,
+            geocoder: false,
+            homeButton: false,
+            infoBox: false,
+            sceneModePicker: false,
+            selectionIndicator: false,
+            timeline: false,
+            navigationHelpButton: false,
+            imageryProvider : Cesium.createOpenStreetMapImageryProvider({url : 'https://a.tile.openstreetmap.org/'}),
+            //imageryProvider : GMap,
+            terrainShadows: Cesium.ShadowMode.DISABLED,
+        });
+
+        window.cesiumViewer._cesiumWidget._creditContainer.style.display = "none";
+
+        cesiumViewer.camera.setView({
+            destination : Cesium.Cartesian3.fromDegrees(51.48, 5.32, 10000),//cp,//Cesium.Cartesian3.fromDegrees(120, 30, 10000),
+            orientation: {
+                heading : Cesium.Math.toRadians(0),
+                pitch : Cesium.Math.toRadians(-90),
+                roll : Cesium.Math.toRadians(0)
+
+            }
+        });
+
+        var cesiumContainer = document.getElementById("cesiumContainer");
+        //var a = cesiumContainer.getElementsByClassName('cesium-widget')[0];
+
+        cesiumContainer.style.visibility="hidden";
+        window.cesiumViewer.scene.canvas.width = cesiumContainer.offsetWidth;
+        window.cesiumViewer.scene.canvas.height = cesiumContainer.offsetHeight;
+
+        //cesiumViewer.scene.screenSpaceCameraController.enableZoom = false;
+        //cesiumViewer.scene.screenSpaceCameraController.enableTilt = false;
+
+        let aspect = three.camera.aspect;
+        if(aspect < 1){
+
+            cesiumViewer.camera.frustum.fov = Math.PI * (three.camera.fov / 180);
+        }else{
+            var fovy = Math.PI * (three.camera.fov / 180);
+            var fovx = Math.atan(Math.tan(0.5 * fovy) * aspect) * 2;
+            cesiumViewer.camera.frustum.fov = fovx;
+        }
+    }
+
+    function initCloud() {
+        try {
+            //这里存在的一个问题是断网打开无法再一次加载js与hrc文件
+
+            //Pco = hrcLoader.loadJSON();
+            //let type = 'js';
+            //let tableName = 'customdata26Gnoclod';
+            //let dataName = 'cloud';
+            //pool.sockets[0].createWebRequest(type, tableName, dataName);
+
+            //type = 'hrc';
+            //dataName = 'r';
+            //pool.sockets[0].createWebRequest(type, tableName, dataName);
+
+            //xml方式解析自定义hrc文件
+            //hrcLoader.loadHierachyFromSelf('r');
+            //xml方式解析Potree官网hrc文件
+            //hrcLoader.loadHierachyFromPotree('r');
+        }
+        catch (error) {
+            alert(error.message);
+        }
+    }
+
+    function initOthers() {
+
+        let object = new THREE.AxesHelper(5000);
+        object.name = 'ax';
+        three.scene.add(object);
+
+    }
+
+    function initStats() {
+
+        stats = new Stats();
+        document.body.appendChild(stats.domElement);
+
+    }
+
+    function initControls() {
+
+        three.controls = new THREE.OrbitControls(three.camera, three.renderer.domElement);
+        three.controls.target = new THREE.Vector3(Pco.boundingBox.max.x/2.5, Pco.boundingBox.max.y/2.8, 0.0);
+
+        three.controls.enableDamping = true;
+        three.controls.enableZoom = true;
+        three.controls.dampingFactor = 0.7;
+        three.controls.autoRotate = false;
+        three.controls.minDistance = 0;
+        three.controls.maxDistance = 4000;//400
+        three.controls.minPolarAngle = -Math.PI; // 俯仰角
+        three.controls.maxPolarAngle = Math.PI/2.0;
+        three.controls.minAzimuthAngle = - Infinity; // 水平角
+        three.controls.maxAzimuthAngle = Infinity; //
+        three.controls.enablePan = true;
+        three.controls.PanSpeed = 100;
+        three.controls.zoomSpeed = 2;
+        three.controls.rotateSpeed = 1;
+
+        //three.controls.addEventListener('change', timeRender);
+    }
+
+    function onWindowResize() {
+
+        three.camera.aspect = window.innerWidth / window.innerHeight;
+        three.godcamera.aspect = window.innerWidth / window.innerHeight;
+
+        three.camera.updateProjectionMatrix();
+        three.godcamera.updateProjectionMatrix();
+
+        three.renderer.setSize(window.innerWidth, window.innerHeight);
+
+    }
+
+    function setKeyEvents(){
+
+        window.addEventListener('keydown',function(e){
+            switch(e.key){
+/*
+                case "c":
+                    if(flag.changecamera === 1){
+                        flag.changecamera = 0;
+                        three.controls.object = three.godcamera;
+                        three.controls.PanSpeed = 1;
+                        three.controls.zoomSpeed = 1.5;
+                        three.controls.rotateSpeed = 1;
+                        three.controls.maxDistance = Infinity;
+                    }
+                    else{
+                        flag.changecamera = 1;
+                        three.controls.object = three.camera;
+                        three.controls.PanSpeed = 100;
+                        three.controls.zoomSpeed = 1;
+                        three.controls.rotateSpeed = 1;
+                        three.controls.maxDistance = 40000;
+                    }
+                    break;
+                    */
+                case "w":
+                    three.camera.position.y += 200;
+                    break;
+                case "s":
+                    three.camera.position.y -= 200;
+                    break;
+                case "q":
+                    three.camera.position.z -= 200;
+                    break;
+                case "e":
+                    three.camera.position.z += 200;
+                    break;
+                case "a":
+                    three.camera.position.x -= 200;
+                    break;
+                case "d":
+                    three.camera.position.x += 200;
+                    break;
+                case "x":
+                    if(document.getElementById("ThreeContainer").style.visibility === "visible"){
+
+                        document.getElementById("ThreeContainer").style.visibility = "hidden";
+                    }
+                    else{
+                        document.getElementById("ThreeContainer").style.visibility = "visible";
+                    }
+                    break;
+                case "z":
+                    interval && clearTimeout(interval);
+                    ttt && clearInterval(ttt);
+                    flag.xflag = 1;
+                    break;
+            }
+
+        });
+        window.addEventListener('keyup',function(e){
+
+            switch(e.key){
+                case "z":
+                    flag.xflag = 0;
+                    interval = setTimeout(function () {
+
+                        temporaryTime = new Date().getTime();
+                        ttt = setInterval(timer,100);
+                        decideAndDraw();
+                    }, 350);
+                    break;
+                case "t":
+
+                    window.clearInterval(tt);
+                    break;
+            }
+
+        });
+    }
+
+    function setEventsMouse(){
+        //点击了鼠标左键
+        window.addEventListener( 'click', function(e){
+            if(e.button===0){
+                console.log("点击了鼠标左键");
+            }
+        } );
+
+        //点击了鼠标右键
+        window.addEventListener( 'contextmenu', function(e){
+            if(e.button===2){
+                console.log("点击了鼠标右键");
+            }
+        } );
+    }
+
+    let ttt;
+
+    function init(){
+
+        initGui();
+        initScene();
+        initThree();
+        initCamera();
+        initCesium();
+        initControls();
+        initStats();
+        //initOthers();
+        setKeyEvents();
+        //setEventsMouse();
+
+        three.target = new THREE.WebGLRenderTarget( window.ThreeContainer.offsetWidth, window.ThreeContainer.offsetHeight );
+        three.target.texture.format = THREE.RGBAFormat;
+        three.target.texture.minFilter = THREE.NearestFilter;
+        three.target.texture.magFilter = THREE.NearestFilter;
+        three.target.texture.type = THREE.FloatType;
+        three.target.texture.generateMipmaps = false;
+        three.target.stencilBuffer = false;
+        three.target.depthBuffer = true;
+        three.target.depthTexture = new THREE.DepthTexture(undefined, undefined, THREE.UnsignedIntType);
+
+        setupPost();
+        flag.position = new THREE.Vector3(0, 0, 0);
+    }
+
+    function setupPost(){
+
+        postCamera2 = new THREE.OrthographicCamera( - 1, 1, 1, - 1, 0, 1 );
+        let proj = three.camera.projectionMatrix;
+        let projArray = new Float32Array(16);
+        projArray.set(proj.elements);
+        var neighbourCount = 8;
+        var neighbours = new Float32Array(neighbourCount * 2);
+
+        for(var c = 0; c < neighbourCount; c++){
+            neighbours[2 * c + 0] = Math.cos(2 * c * Math.PI / neighbourCount);
+            neighbours[2 * c + 1] = Math.sin(2 * c * Math.PI / neighbourCount);
+        }
+
+        postMaterial1 = new THREE.ShaderMaterial( {
+            vertexShader: document.querySelector( '#post-vert' ).textContent.trim(),
+            fragmentShader: document.querySelector( '#post-frag' ).textContent.trim(),
+            uniforms: {
+                changeflag:     { value: flag.changeFlag},
+                screenWidth: 	{ value: window.ThreeContainer.offsetWidth },
+                screenHeight: 	{ value: window.ThreeContainer.offsetHeight },
+                edlStrength: 	{ value: gui.strength },
+                uNear:          { value: three.camera.near },
+                uFar:           { value: three.camera.far },
+                radius: 		{ value: 1.0 },
+                neighbours:		{ value: neighbours },
+                depthMap: 		{ value: null },
+                uEDLColor:		{ value: three.target.texture },
+                opacity:		{ value: 1.0 },
+                uProj:			{ value: projArray },
+            }
+        } );
+        postMaterial1.transparent = true;
+
+        postScene2 = new THREE.Scene();
+        const AmbientLight = new THREE.AmbientLight( 0xffffff, 3.0);
+        postScene2.add(AmbientLight);
+
+        var postPlane = new THREE.PlaneBufferGeometry( 2, 2);
+        var postQuad = new THREE.Mesh( postPlane, postMaterial1 );
+        postScene2.add(postQuad);
+    }
+
+    function threeRender() {
+
+        three.renderer.clear();
+        if(flag.changecamera === 1) {
+
+            if(gui.EDL === false) {
+
+                three.renderer.setRenderTarget(null);
+                three.renderer.render(three.scene, three.camera);
+            }
+            else {
+                //three.renderer.setFaceCulling(THREE.CullFaceFrontBack, THREE.FrontFaceDirectionCCW);
+                three.renderer.setRenderTarget(three.target);
+                three.renderer.render(three.scene, three.camera);
+                three.renderer.setRenderTarget(null);
+                three.renderer.render(postScene2, postCamera2);
+
+            }
+
+        }
+        else{
+
+            three.renderer.render(three.scene, three.godcamera);
+        }
+
+    }
+
+    function cesiumRender(){
+
+        let camera = three.camera;
+        let pointcloudProjection = "+proj=sterea +lat_0=52.15616055555555 +lon_0=5.38763888888889 +k=0.9999079 +x_0=155000 +y_0=463000 +ellps=bessel +units=m +no_defs";
+        let mapProjection = proj4.defs("WGS84");
+
+        if(camera instanceof THREE.PerspectiveCamera){
+
+            let mv = three.camera.matrixWorld;
+
+            var mat4 = new THREE.Matrix4();
+            mat4.set(
+                mv.elements[0], mv.elements[4], mv.elements[8], mv.elements[12] + 150000,
+                mv.elements[1], mv.elements[5], mv.elements[9], mv.elements[13] + 387500,
+                mv.elements[2], mv.elements[6], mv.elements[10], mv.elements[14] + 8.417,
+                mv.elements[3], mv.elements[7], mv.elements[11], mv.elements[15]
+            );
+
+            let pPos = new THREE.Vector3(0, 0, 0).applyMatrix4(mat4);
+            let pUp = new THREE.Vector3(0, 1, 0).applyMatrix4(mat4);
+            //let v = pUp.clone().sub(pPos);
+
+            var pTarget = new THREE.Vector3();
+            camera.getWorldDirection(pTarget);//这个与后面那个相同
+
+            pTarget.x = three.controls.target.x + 150000;
+            pTarget.y = three.controls.target.y + 387500;
+            pTarget.z = three.controls.target.z + 8.417;
+
+            let toCes = (pos) => {
+
+                let xy = [pos.x, pos.y];
+                let height = pos.z;
+                let deg = proj4(pointcloudProjection, mapProjection).forward(xy);
+                return Cesium.Cartesian3.fromDegrees(...deg, height);
+            };
+
+            let cPos = toCes(pPos);
+            let cUpTarget = toCes(pUp);
+            let cTarget = toCes(pTarget);
+
+            let cDir = Cesium.Cartesian3.subtract(cTarget, cPos, new Cesium.Cartesian3());
+            let cUp = Cesium.Cartesian3.subtract(cUpTarget, cPos, new Cesium.Cartesian3());
+
+            cDir = Cesium.Cartesian3.normalize(cDir, new Cesium.Cartesian3());
+            cUp = Cesium.Cartesian3.normalize(cUp, new Cesium.Cartesian3());
+
+            cesiumViewer.camera.setView({
+                destination : cPos,
+                orientation : {
+                    direction : cDir,
+                    up : cUp
+                }
+            });
+
+/*
+            var mw = three.camera.matrixWorld;
+            var mwi = three.camera.matrixWorldInverse;
+
+            for(let i = 0; i < 16; i++){
+                cesiumViewer.camera.viewMatrix[i] = mwi.elements[i];
+                cesiumViewer.camera.inverseViewMatrix[i] = mw.elements[i];
+            }
+*/
+
+            cesiumViewer.render();
+
+        }
+    }
+
+    function renderNodePerFrame(){
+
+        if(completedLoadedNodes.length > 0){
+
+            var m = 0;
+            while( m < 6 && completedLoadedNodes.length !== 0){
+
+                let node = completedLoadedNodes.shift();
+                /*
+                if(node.length - 1 > gui.currentMaxLevel){
+                    gui.currentMaxLevel = node.length - 1;
+                }
+                for (let i = 0; i < three.scene.children.length; i++) {
+
+                    three.scene.children[i].material.uniforms.maxLevel = {
+                        type: 'float', value: gui.currentMaxLevel
+                    };
+
+                }*/
+                GPU_CLOD_Render(node);
+                m++;
+            }
+        }
+    }
+
+    var renderEnabled;
+    let timeOut = null;
+
+    function timeRender() {
+
+        console.log('激活');
+        //设置为可渲染状态
+        renderEnabled = true;
+        //清除上次的延迟器
+        if (timeOut) {
+            clearTimeout(timeOut);
+        }
+
+        timeOut = setTimeout(function () {
+            renderEnabled = false;
+        }, 3000);
+    }
+
+    function animate() {
+
+        updataCamera();
+        if(flag.changeFlag === 1){
+
+            postMaterial1.uniforms.changeflag.value = 1;
+        }
+        else{
+            postMaterial1.uniforms.changeflag.value = 0;
+        }
+        renderNodePerFrame();
+        three.controls.update();
+
+        //if(renderEnabled){
+            threeRender();
+        //}
+
+        if(flag.changeFlag === 0){
+            cesiumRender();
+        }
+        stats.update();
+        requestAnimationFrame(animate);
+
+    }
+
+    function clearCanvas() {
+
+        var c = document.getElementById("bCanvas");
+        var cxt = c.getContext("2d");
+        cxt.clearRect(0,0,c.width,c.height);
+    }
+
+    let pool;
+
+    $(function() {
+
+        pool = new wsocketPool('ws://47.112.97.110:8080');
+        //pool = new wsocketPool('ws://47.112.97.110:3000/PotreeView');
+        pool.createSockets();
+
+        request.onerror = () => {
+
+            console.log('数据库打开报错，错误原因在于：', request.error);
+
+        };
+
+        request.onsuccess = (ev) => {
+
+            console.log('数据库打开成功');
+            db = ev.target.result;
+
+            let workerPath = 'libs/indexedDB.js';
+            let worker = workerPool.getWorker(workerPath);
+            worker.postMessage({
+                flag: 0,
+            });
+            worker.onmessage = function (message) {
+                workerPool.returnWorker(workerPath, worker);
+            };
+
+            readFromIndexDB('index');
+
+        };
+
+        request.onupgradeneeded = (ev) => {
+
+            db = ev.target.result;
+            console.log('数据库新建成功');
+            if (!db.objectStoreNames.contains('Nodes')) {
+
+                db.createObjectStore('Nodes',{keyPath:"name"});
+            }
+
+        };
+    });
+
+    function updataCamera() {
+
+        three.camera.far = gui.far;
+        three.camera.fov = gui.fov;
+        three.camera.updateProjectionMatrix();
+
+    }
+
+    function decideAndDraw() {
+
+        if( flag.position.x.toFixed(2) === three.camera.position.x.toFixed(2) && flag.position.y.toFixed(2) === three.camera.position.y.toFixed(2) && flag.position.z.toFixed(2) === three.camera.position.z.toFixed(2)){
+
+            console.log('相机并未移动');
+            return;
+        }
+        renderEnabled = true;
+        flag.position = new THREE.Vector3(three.camera.position.x, three.camera.position.y, three.camera.position.z);
+
+        //removeALLModel();
+        judgeOldPoints();
+        judegeVisibleNodes();
+
+        if(gui.Box === true){
+            boxRender(drawQueue);
+        }
+
+        transferNodeFromMemoryToDatabase();
+    }
+
+    function transferNodeFromMemoryToDatabase(){
+
+        console.log('当前内存中有：', memoryNode.length);
+
+        if(flag.indexTableFlag === 1) {
+
+            let toFarNodesName = [];
+            let toFarNodesPositionArray = [];
+            let toFarNodesLevelArray = [];
+            let arrayBuffer = [];
+            let k = 0;
+
+            for (let i = 0; i < memoryNode.length;) {
+
+                if (memoryNode[i].length - 1 > three.mustRenderLevel) {
+
+                    let box = Pco.nodes[memoryNode[i]].boundingBox;
+                    let frustum = new THREE.Frustum();
+                    frustum.setFromMatrix(new THREE.Matrix4().multiplyMatrices(three.camera.projectionMatrix, three.camera.matrixWorldInverse));
+
+                    if (!frustum.intersectsBox(box)) {
+
+                        if (indexQueue.indexOf(memoryNode[i]) !== -1) {
+
+                            k++;
+                            Pco.nodes[memoryNode[i]].geometry.attributes.position = null;
+                            Pco.nodes[memoryNode[i]].geometry.attributes.level = null;
+
+                        } else {
+
+                            toFarNodesName.push(memoryNode[i]);
+                            toFarNodesPositionArray.push(Pco.nodes[memoryNode[i]].geometry.attributes.position.array);
+                            toFarNodesLevelArray.push(Pco.nodes[memoryNode[i]].geometry.attributes.level.array);
+                            arrayBuffer.push(Pco.nodes[memoryNode[i]].geometry.attributes.position.array.buffer);
+                            arrayBuffer.push(Pco.nodes[memoryNode[i]].geometry.attributes.level.array.buffer);
+                        }
+
+                        memoryNode.remove(memoryNode[i]);
+
+                    } else {
+
+                        i++;
+                    }
+
+                } else {
+
+                    i++;
+                }
+
+            }
+            console.log('需要存', toFarNodesName.length, '数据库中原有',k);
+
+            if (toFarNodesName.length !== 0) {
+
+                let workerPath = 'libs/indexedDB.js';
+                let worker = workerPool.workers[workerPath][0];
+
+                worker.postMessage({
+
+                    flag: 1,
+                    nodesName: toFarNodesName,
+                    nodesPositionArray: toFarNodesPositionArray,
+                    nodesLevelArray: toFarNodesLevelArray,
+
+                }, arrayBuffer);
+
+                worker.onmessage = function (message) {
+
+                    let nodes = message.data.nodesName;
+
+                    for (let i = 0; i < nodes.length; i++) {
+
+                        if (indexQueue.indexOf(nodes[i]) === -1) {
+
+                            indexQueue.push(nodes[i]);
+                        }
+
+                        Pco.nodes[nodes[i]].geometry.attributes.position = null;
+                        Pco.nodes[nodes[i]].geometry.attributes.level = null;
+
+                    }
+
+                    update('index', indexQueue);
+                    console.log('插入完毕', indexQueue.length);
+
+                };
+            }
+        }
+    }
+
+    var interval = null;
+
+    function mousedown(event) {
+
+        ttt && clearInterval(ttt);
+        interval && clearTimeout(interval);
+        //console.log($.data(cloudsData));
+        //$.data(cloudsData).hasOwnProperty(requestQueue[i])
+    }
+
+    var temporaryTime;
+
+    function mouseup(event) {
+
+        interval = setTimeout(function () {
+
+            temporaryTime = new Date().getTime();
+            ttt = setInterval(timer,100);
+            decideAndDraw();
+
+        }, 350);
+
+    }
+
+    function timer(){
+        var time = new Date();
+        document.getElementById("renderTimer").value = 'time:' + (time.getTime() - temporaryTime);
+    }
+
+
+</script>
+</body>
+</html>

@@ -1,0 +1,108 @@
+#ThreeContainer{
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    width: 100%;
+    margin: 0;
+}
+
+#cesiumContainer{
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    width: 100%;
+    margin: 0;
+}
+
+
+.Navbar {
+    position: fixed;
+    width: 0px;
+    overflow: visible;
+}
+.nav{
+    display: inline-block;
+    float: right;
+    clear: both;
+}
+.a{
+
+    position: relative;
+    left: 20px;
+    top: 50px;
+    padding: 10px 30px 10px 60px;
+    margin: 10px;
+    background: rgba(27, 79, 147,0.6);
+    x-box-shadow: 0 0 8px 0px rgba(0, 0, 0, 0.5);
+    box-shadow: 8px 0 8px -8px rgba(0, 0, 0, 0.5);
+    transition: all 0.3s ease-in-out 0.1s;
+    -o-transition: all 0.3s ease-in-out 0.1s;
+    -ms-transition: all 0.3s ease-in-out 0.1s;
+    -moz-transition: all 0.3s ease-in-out 0.1s;
+    -webkit-transition: all 0.3s ease-in-out 0.1s;
+}
+.a:hover{
+    position: relative;
+    left: 100%;
+    margin-left: -32px;
+    background-color: rgba(30,144,255,0.7);
+    box-shadow: 0 -8px 8px -8px rgba(0, 0, 0, 0.5),
+    0 8px 8px -8px rgba(0, 0, 0, 0.5);
+    transition: all 0.3s ease-in-out;
+    -o-transition: all 0.3s ease-in-out;
+    -ms-transition: all 0.3s ease-in-out;
+    -moz-transition: all 0.3s ease-in-out;
+    -webkit-transition: all 0.3s ease-in-out;
+}
+.span{
+    display: inline-block;
+    color: #fff;
+    font-family: 'Droid Sans', sans-serif;
+    font-size: 15px;
+    font-weight: bold;
+    white-space: nowrap;
+}
+
+.txt{
+    width:150px;
+    height:30px;
+    position:absolute;
+    top:0px;
+    right:0px;
+    border:none;
+    background-color:rgba(0, 0, 0, 0);
+    color:rgba(18, 18, 18, 1);
+    font-size:20px;
+    font-family: Tahoma;
+    font-weight: bold;
+}
+
+.reportTxt{
+    width:400px;
+    height:30px;
+    position:absolute;
+    top:0px;
+    right:300px;
+    border:none;
+    background-color:rgba(0, 0, 0, 0);
+    color:rgba(18, 18, 18, 1);
+    font-size:20px;
+    font-family: Tahoma;
+    font-weight: bold;
+}
+
+.pointsTxt{
+    width:180px;
+    height:30px;
+    position:absolute;
+    top:0px;
+    right:200px;
+    border:none;
+    background-color:rgba(0, 0, 0, 0);
+    color:rgba(18, 18, 18, 1);
+    font-size:20px;
+    font-family: Tahoma;
+    font-weight: bold;
+}

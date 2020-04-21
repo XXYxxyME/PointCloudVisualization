@@ -1,0 +1,1 @@
+{"boundingBox":{"ux":159999.999,"uy":397499.999,"uz":10008.41600000001,"lx":150000.0,"ly":387500.0,"lz":8.417},"tightBoundingBox":{"ux":159999.999,"uy":393749.999,"uz":80.022,"lx":150000.0,"ly":387500.0,"lz":8.417},"scale":[0.001,0.001,0.001],"pointAttributes":["POSITION_CARTESIAN","RGB_PACKED"],"points":976551614}
